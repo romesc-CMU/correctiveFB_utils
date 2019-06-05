@@ -91,9 +91,9 @@ def objective_fn(w,mpc,traj,dtype):
     return cost
 
 def pixelMapInRobotFrame(map_data, pose, crop_square=200):
-    import torchvision
+    import cv2
     pose_mapFrame = np.asarray([pose])
-    utils.world2mapnp(map_data, pose_mapFrame) #this is a bad function which does inplace assignment (rather than explicitly returns a new object)...
+    utils.world2mapnp(map_data, pose_mapFrame) #this is a bad function signature which does inplace assignment of pose_mapFrame (rather than explicitly returns a new object)...
 
     map_img = np.array(map_data._get_map_data)
     #convert 'unknown'=-1 and 'wall'=100 to value 1; keep freespace=0
@@ -105,16 +105,40 @@ def pixelMapInRobotFrame(map_data, pose, crop_square=200):
     
     #convert to uint8 (just in case)
     #map_img = map_img.astype(np.uint8)
+    map_img = map_img.astype(np.float32)
 
-    #crop map according to pose for now just [x,y] crop, TODO:rotation
+#crop map according to pose 
+    x_mapCenter = int(math.floor(map_data.width/2)) #TODO:is this accurate?
+    y_mapCenter = int(math.floor(map_data.height/2)) #TODO:is this accurate?
     x_r = int(pose_mapFrame[0][0])
     y_r = int(pose_mapFrame[0][1])
+    th_r = (180/math.pi)*pose_mapFrame[0][2] #convert to degrees
+    th_r = th_r - 40 # a rotation offset (set this so that the rotation would result in an image in which the robot is pointing approximately north based on sim traj viz)
     marg = int(math.floor(crop_square/2))
+
+    #TODO: need to verify that translation is in correct direction
+    #TODO: need to verify that padding occurs during this process
+    rows, cols = map_img.shape
+    x_trans = x_r - x_mapCenter
+    y_trans = y_r - y_mapCenter 
+    M_trans = np.float32([[1,0,-x_trans],[0,1,-y_trans]])
+    map_img_trans = cv2.warpAffine(map_img, M_trans,(cols,rows))
+
+    #flip image horizontally (I don't know why we have to do this)
+    map_img_flip = cv2.flip(map_img_trans, 1) # 1 indicates flip across vertical axis
+
+    M_rot = cv2.getRotationMatrix2D((cols/2,rows/2),th_r,1)
+    map_img_rot = cv2.warpAffine(map_img_flip, M_rot,(cols,rows))
+    
+    
+
+    map_img_crop = map_img_rot[y_mapCenter-marg:y_mapCenter+marg , x_mapCenter-marg:x_mapCenter+marg] 
+
+    viz_map(map_img_crop)
 
     #Check the crop region is valid
     assert(x_r > marg and x_r < map_data.width-marg and y_r > marg and y_r < map_data.height-marg), "Crop region too large for the map margins! Try padding your map or reducing crop region."
 
-    map_img_crop = map_img[y_r-marg:y_r+marg , x_r-marg:x_r+marg]
 
     return map_img_crop
 
