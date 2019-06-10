@@ -19,6 +19,8 @@ import librhc.types as types
 #import logger
 #from scipy.optimize import minimize
 
+CROP_SQUARE_SZ = 200
+
 
 def quaternion_to_angle(q):
     x, y, z, w = q.x, q.y, q.z, q.w
@@ -73,12 +75,6 @@ def get_map(bag):
     )
     return map_data
 
-def viz_map(map_img):
-    import matplotlib.pyplot as plt
-    plt.imshow(map_img, cmap='gray_r', vmin=0, vmax=255)
-    #plt.imshow(np.transpose(npimg, (1, 2, 0)))
-    plt.show()
-
 def objective_fn(w,mpc,traj,dtype):
     mpc.cost.dist_w = w[0]
     mpc.cost.obs_dist_w = w[1]
@@ -90,10 +86,17 @@ def objective_fn(w,mpc,traj,dtype):
             cost+= np.linalg.norm(u_i - dtype(p[1]))
     return cost
 
-def pixelMapInRobotFrame(map_data, pose, crop_square=200):
+def viz_map(map_img):
+    import matplotlib.pyplot as plt
+    plt.imshow(map_img, cmap='gray_r', vmin=0, vmax=255)
+    plt.show()
+
+
+def pixelMapInRobotFrame(map_data, pose_worldFrame, crop_square=200):
     import cv2
-    pose_mapFrame = np.asarray([pose])
+    pose_mapFrame = np.asarray([pose_worldFrame]) # this variable WILL get converted to mapFrame after next function call
     utils.world2mapnp(map_data, pose_mapFrame) #this is a bad function signature which does inplace assignment of pose_mapFrame (rather than explicitly returns a new object)...
+
 
     map_img = np.array(map_data._get_map_data)
     #convert 'unknown'=-1 and 'wall'=100 to value 1; keep freespace=0
@@ -108,37 +111,31 @@ def pixelMapInRobotFrame(map_data, pose, crop_square=200):
     map_img = map_img.astype(np.float32)
 
 #crop map according to pose 
-    x_mapCenter = int(math.floor(map_data.width/2)) #TODO:is this accurate?
-    y_mapCenter = int(math.floor(map_data.height/2)) #TODO:is this accurate?
+    x_mapCenter = int(math.floor(map_data.width/2)) #TODO:accurate enough?
+    y_mapCenter = int(math.floor(map_data.height/2)) 
     x_r = int(pose_mapFrame[0][0])
     y_r = int(pose_mapFrame[0][1])
-    th_r = (180/math.pi)*pose_mapFrame[0][2] #convert to degrees
-    th_r = th_r - 40 # a rotation offset (set this so that the rotation would result in an image in which the robot is pointing approximately north based on sim traj viz)
+    th_r = -(180/math.pi)*pose_mapFrame[0][2] #convert to degrees
+    #th_r = th_r + 90  # a rotation offset (set this so that the rotation would result in an image in which the robot is pointing approximately north based on sim traj viz)
     marg = int(math.floor(crop_square/2))
 
-    #TODO: need to verify that translation is in correct direction
     #TODO: need to verify that padding occurs during this process
     rows, cols = map_img.shape
-    x_trans = x_r - x_mapCenter
-    y_trans = y_r - y_mapCenter 
-    M_trans = np.float32([[1,0,-x_trans],[0,1,-y_trans]])
+    x_trans = x_mapCenter - x_r
+    y_trans = y_mapCenter - y_r
+    M_trans = np.float32([[1,0,x_trans],[0,1,y_trans]])
     map_img_trans = cv2.warpAffine(map_img, M_trans,(cols,rows))
 
     #flip image horizontally (I don't know why we have to do this)
-    map_img_flip = cv2.flip(map_img_trans, 1) # 1 indicates flip across vertical axis
+    map_img_flip = cv2.flip(map_img_trans, 0) # 0 indicates flip across horizontal axis
 
     M_rot = cv2.getRotationMatrix2D((cols/2,rows/2),th_r,1)
     map_img_rot = cv2.warpAffine(map_img_flip, M_rot,(cols,rows))
-    
-    
 
     map_img_crop = map_img_rot[y_mapCenter-marg:y_mapCenter+marg , x_mapCenter-marg:x_mapCenter+marg] 
 
-    viz_map(map_img_crop)
-
-    #Check the crop region is valid
+    # Check the crop region is valid
     assert(x_r > marg and x_r < map_data.width-marg and y_r > marg and y_r < map_data.height-marg), "Crop region too large for the map margins! Try padding your map or reducing crop region."
-
 
     return map_img_crop
 
@@ -146,10 +143,21 @@ def main(args):
     print("Reading in rosbag from '" + args.infile + "'...")
     map_data = get_map(args.infile)
 
-    trajs = separate_trajectories(args.infile)
-    map_img_crop = pixelMapInRobotFrame(map_data, trajs[0][0][0], 400)
+    # Separate trajectories out of rosbag
+    trajs = separate_trajectories(args.infile)[0]
 
-    viz_map(map_img_crop)
+    # Generate our image crops for each waypoint in trajectory
+    map_img_crops = np.empty((1,CROP_SQUARE_SZ, CROP_SQUARE_SZ))
+    for traj in trajs:
+        map_img_crop = pixelMapInRobotFrame(map_data, traj[0], CROP_SQUARE_SZ)
+
+        import ipdb; ipdb.set_trace()
+        map_img_crops = np.concatenate((map_img_crops,[map_img_crop]), axis=0)
+
+
+
+    # Save the image crops  to external file
+    np.save('../data/map_crops', map_img_crops)
 
     import ipdb
     ipdb.set_trace()
